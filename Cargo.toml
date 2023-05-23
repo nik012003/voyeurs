@@ -1,0 +1,14 @@
+[package]
+name = "voyeurs"
+authors = ["Nicola Guerrera <guerrera.nicola@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+exclude = ["/.vscode"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.3.0", features = ["derive"] }
+mpvipc = "1.2.2"
+tempfile = "3.5.0"
+tokio = { version = "1.28.1" , features = ["full"] }
