@@ -12,7 +12,7 @@ use std::{
 use tempfile::tempdir;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{tcp::OwnedWriteHalf, TcpListener, TcpStream},
+    net::{lookup_host, tcp::OwnedWriteHalf, TcpListener, TcpStream},
     sync::Mutex,
 };
 use url::Url;
@@ -150,11 +150,13 @@ async fn main() {
     // Handle client
     else {
         println!("Connecting to {}", args.address);
-        let addr: SocketAddr = args
-            .address
-            .parse()
+        let addr = lookup_host(args.address)
+            .await
+            .expect("Server lookup failed")
+            .next()
             .expect("Couldn't create SockAddr from the given address and port");
-        let stream = TcpStream::connect(addr)
+
+        let stream = TcpStream::connect(dbg!(addr))
             .await
             .expect("Could not connect to server");
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
