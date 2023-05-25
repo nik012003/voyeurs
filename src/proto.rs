@@ -12,7 +12,7 @@ const PROTOCOL_VERSION: u16 = 1;
 // |   timestamp   | cmd_code |    lenght   | args ...|
 // |_______________|__________|_____________|_________| ......
 // ^               ^          ^             ^                 ^
-// |    16 bytes   |  1 byte  |   2 bytes   |  $lenght bytes  |
+// |    8 bytes   |  1 byte  |   2 bytes   |  $lenght bytes  |
 
 type TsSize = u64;
 type CmdSize = u8;
