@@ -81,29 +81,8 @@ impl PacketReader {
             return Err(Box::new(TooShort));
         }
 
-        let command = match cmd_code {
-            0x00 => {
-                // The first 2 bytes of the vector reperent the protocol version
-                let ver = u16::from_be_bytes(args.get(0..2).ok_or(TooShort)?.try_into()?);
-                if ver != PROTOCOL_VERSION {
-                    return Err(Box::new(UncompatibleProtocolVersion { ver }));
-                }
-                VoyeursCommand::NewConnection(String::from_utf8(args[2..].to_vec())?)
-            }
-            0x01 => VoyeursCommand::Pause(*args.get(0).unwrap() == 1),
-            0x02 => {
-                let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
-                VoyeursCommand::Seek(time)
-            }
-            0x03 => VoyeursCommand::Filename(String::from_utf8(args)?),
-            0x04 => {
-                let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
-                VoyeursCommand::Duration(time)
-            }
-            0x05 => VoyeursCommand::StreamName(String::from_utf8(args)?),
-            0x06 => VoyeursCommand::GetStreamName,
-            cmd => return Err(Box::new(UnkownCommand { cmd })),
-        };
+        let command = VoyeursCommand::from_bytes(cmd_code, args)?;
+
         Ok(Packet { timestamp, command })
     }
 }
@@ -118,9 +97,34 @@ impl Packet {
     pub fn compile(self) -> Vec<u8> {
         let mut payload: Vec<u8> = vec![];
         payload.append(self.timestamp.to_be_bytes().to_vec().as_mut());
-        let cmd_code: CmdSize;
-        let mut args: Vec<u8>;
-        match self.command {
+
+        let (cmd_code, args) = self.command.to_bytes();
+
+        payload.push(cmd_code);
+        let mut len = (args.len() as LenSize).to_be_bytes().to_vec();
+        payload.append(&mut len);
+        payload.append(args.clone().as_mut());
+        payload
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+
+pub enum VoyeursCommand {
+    NewConnection(String), // 0x00
+    Pause(bool),           // 0x01
+    Seek(f64),             // 0x02
+    Filename(String),      // 0x03
+    Duration(f64),         // 0x04
+    StreamName(String),    // 0x05
+    GetStreamName,         // 0x06
+}
+
+impl VoyeursCommand {
+    fn to_bytes(&self) -> (CmdSize, Vec<u8>) {
+        let cmd_code;
+        let mut args;
+        match self {
             VoyeursCommand::NewConnection(name) => {
                 cmd_code = 0x00;
                 args = vec![];
@@ -129,7 +133,7 @@ impl Packet {
             }
             VoyeursCommand::Pause(p) => {
                 cmd_code = 0x01;
-                args = [p as u8].to_vec();
+                args = [p.clone() as u8].to_vec();
             }
             VoyeursCommand::Seek(t) => {
                 cmd_code = 0x02;
@@ -152,27 +156,40 @@ impl Packet {
                 args = vec![];
             }
         }
-        payload.push(cmd_code);
-        let mut len = (args.len() as LenSize).to_be_bytes().to_vec();
-        payload.append(&mut len);
-        payload.append(&mut args);
-        payload
+        (cmd_code, args)
     }
-}
 
-#[derive(Debug, Clone, PartialEq)]
+    pub fn from_bytes(
+        cmd_code: CmdSize,
+        args: Vec<u8>,
+    ) -> Result<Self, Box<dyn Error + Sync + Send>> {
+        match cmd_code {
+            0x00 => {
+                // The first 2 bytes of the vector reperent the protocol version
+                let ver = u16::from_be_bytes(args.get(0..2).ok_or(TooShort)?.try_into()?);
+                if ver != PROTOCOL_VERSION {
+                    return Err(Box::new(UncompatibleProtocolVersion { ver }));
+                }
+                Ok(VoyeursCommand::NewConnection(String::from_utf8(
+                    args[2..].to_vec(),
+                )?))
+            }
+            0x01 => Ok(VoyeursCommand::Pause(*args.get(0).unwrap() == 1)),
+            0x02 => {
+                let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
+                Ok(VoyeursCommand::Seek(time))
+            }
+            0x03 => Ok(VoyeursCommand::Filename(String::from_utf8(args)?)),
+            0x04 => {
+                let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
+                Ok(VoyeursCommand::Duration(time))
+            }
+            0x05 => Ok(VoyeursCommand::StreamName(String::from_utf8(args)?)),
+            0x06 => Ok(VoyeursCommand::GetStreamName),
+            cmd => return Err(Box::new(UnkownCommand { cmd })),
+        }
+    }
 
-pub enum VoyeursCommand {
-    NewConnection(String), // 0x00
-    Pause(bool),           // 0x01
-    Seek(f64),             // 0x02
-    Filename(String),      // 0x03
-    Duration(f64),         // 0x04
-    StreamName(String),    // 0x05
-    GetStreamName,         // 0x06
-}
-
-impl VoyeursCommand {
     pub fn craft_packet(self) -> Packet {
         let timestamp: TsSize = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -185,4 +202,23 @@ impl VoyeursCommand {
     }
 }
 
-//TODO: write tests
+#[cfg(test)]
+mod tests {
+    use crate::proto::VoyeursCommand;
+
+    #[test]
+    fn test_command_parser() {
+        check_parse(VoyeursCommand::NewConnection("test".to_string()));
+        check_parse(VoyeursCommand::Pause(false));
+        check_parse(VoyeursCommand::Seek(0.0));
+        check_parse(VoyeursCommand::Filename("test".to_string()));
+        check_parse(VoyeursCommand::Duration(1.0));
+        check_parse(VoyeursCommand::StreamName("test".to_string()));
+        check_parse(VoyeursCommand::GetStreamName);
+    }
+
+    fn check_parse(cmd: VoyeursCommand) {
+        let (cmd_code, args) = cmd.to_bytes();
+        assert_eq!(cmd, VoyeursCommand::from_bytes(cmd_code, args).unwrap());
+    }
+}
