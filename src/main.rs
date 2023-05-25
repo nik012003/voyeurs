@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use tempfile::tempdir;
+use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncWriteExt,
     net::{lookup_host, tcp::OwnedWriteHalf, TcpListener, TcpStream},
@@ -43,6 +44,8 @@ struct Cli {
 
 struct Shared {
     peers: HashMap<SocketAddr, OwnedWriteHalf>,
+    _ready_peers: Vec<bool>,
+    ignore_next: bool,
 }
 
 impl Shared {
@@ -50,6 +53,8 @@ impl Shared {
     fn new() -> Self {
         Shared {
             peers: HashMap::new(),
+            _ready_peers: vec![],
+            ignore_next: false,
         }
     }
 
@@ -70,6 +75,17 @@ impl Shared {
                 .write_all(&command.clone().craft_packet().compile())
                 .await
                 .unwrap();
+        }
+    }
+
+    async fn broadcast_excluding(&mut self, command: VoyeursCommand, addr: SocketAddr) {
+        for peer in self.peers.iter_mut() {
+            if *peer.0 != addr {
+                peer.1
+                    .write_all(&command.clone().craft_packet().compile())
+                    .await
+                    .unwrap();
+            }
         }
     }
 }
@@ -208,15 +224,27 @@ async fn handle_connection(
     loop {
         match reader.read_packet().await {
             Ok(packet) => {
-                match packet.command {
+                match dbg!(packet.command) {
                     VoyeursCommand::Pause(p) => {
+                        let mut s = state.lock().await;
+                        s.ignore_next = true;
                         mpv.set_property("pause", p).unwrap();
+                        if is_serving {
+                            s.broadcast_excluding(VoyeursCommand::Pause(p), addr).await;
+                        }
                     }
                     VoyeursCommand::Seek(t) => {
                         let current_time: f64 =
                             mpv.get_property("playback-time").unwrap_or_default();
+                        let mut s = state.lock().await;
                         if t != current_time {
-                            mpv.seek(t, SeekOptions::Absolute).unwrap()
+                            s.ignore_next = true;
+
+                            mpv.seek(t, SeekOptions::Absolute).unwrap();
+
+                            if is_serving {
+                                s.broadcast_excluding(VoyeursCommand::Seek(t), addr).await;
+                            }
                         }
                     }
                     VoyeursCommand::NewConnection(username) => {
@@ -300,40 +328,31 @@ async fn handle_connection(
 }
 
 fn process_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>) {
+    let rt = Runtime::new().unwrap();
+    let handle = rt.handle();
     loop {
         let event = mpv.event_listen().unwrap();
+        let mut s = handle.block_on(state.lock());
+        if dbg!(s.ignore_next) {
+            s.ignore_next = false;
+            continue;
+        }
         match event {
             Event::Shutdown => exit(0),
             Event::EndFile => exit(0),
-            Event::Seek => {}
             Event::PropertyChange { id: _, property } => match property {
                 Property::Path(_) => todo!(),
                 Property::Pause(p) => {
-                    let cloned_state = Arc::clone(&state);
-                    tokio::task::spawn(async move {
-                        cloned_state
-                            .lock()
-                            .await
-                            .broadcast(VoyeursCommand::Pause(p))
-                            .await
-                    });
+                    handle.block_on(s.broadcast(VoyeursCommand::Pause(p)));
                 }
                 Property::Unknown { name, data } => match name.as_str() {
                     "seeking" => {
                         println!("seeking:{:?}", data);
                         match data {
                             MpvDataType::Bool(false) => {
-                                let cloned_state = Arc::clone(&state);
                                 let current_time =
                                     mpv.get_property("playback-time").unwrap_or_default();
-                                println!("myseek: {current_time}");
-                                tokio::task::spawn(async move {
-                                    cloned_state
-                                        .lock()
-                                        .await
-                                        .broadcast(VoyeursCommand::Seek(current_time))
-                                        .await
-                                });
+                                handle.block_on(s.broadcast(VoyeursCommand::Seek(current_time)));
                             }
                             MpvDataType::Bool(true) => {
                                 println!("Houston we have a buffering problem");
