@@ -77,8 +77,10 @@ impl PacketReader {
         let len = LenSize::from_be_bytes(len);
 
         let mut args: Vec<u8> = vec![0; len as usize];
-        if self.inner.try_read(&mut args)? != len as usize {
-            return Err(Box::new(TooShort));
+        if len > 0 {
+            if self.inner.try_read(&mut args)? != len as usize {
+                return Err(Box::new(TooShort));
+            }
         }
 
         let command = VoyeursCommand::from_bytes(cmd_code, args)?;
