@@ -1,22 +1,21 @@
+mod client_message_handler;
+mod mpv_event_handler;
 mod proto;
+
 use clap::Parser;
+use client_message_handler::*;
+use mpv_event_handler::*;
 use mpvipc::*;
 use proto::*;
 use std::net::SocketAddr;
 use std::vec;
-use std::{
-    collections::HashMap,
-    process::{exit, Command},
-    sync::Arc,
-};
+use std::{collections::HashMap, process::Command, sync::Arc};
 use tempfile::tempdir;
-use tokio::runtime::Runtime;
 use tokio::{
     io::AsyncWriteExt,
     net::{lookup_host, tcp::OwnedWriteHalf, TcpListener, TcpStream},
     sync::Mutex,
 };
-use url::Url;
 
 #[derive(Parser)]
 #[command(about, version)]
@@ -42,19 +41,24 @@ struct Cli {
     mpv_args: Vec<String>,
 }
 
-struct Shared {
-    peers: HashMap<SocketAddr, OwnedWriteHalf>,
-    _ready_peers: Vec<bool>,
+pub struct Peer {
+    tx: OwnedWriteHalf,
+    username: String,
+    ready: bool,
+}
+
+pub struct Shared {
+    peers: HashMap<SocketAddr, Peer>,
     ignore_next: bool,
+    is_ready: bool,
 }
 
 impl Shared {
-    /// Create a new, empty, instance of `Shared`.
     fn new() -> Self {
         Shared {
             peers: HashMap::new(),
-            _ready_peers: vec![],
             ignore_next: false,
+            is_ready: false,
         }
     }
 
@@ -62,16 +66,17 @@ impl Shared {
         self.peers
             .get_mut(&addr)
             .unwrap()
+            .tx
             .write_all(&command.craft_packet().compile())
             .await
             .unwrap();
     }
 
-    /// Send a `LineCodec` encoded message to every peer, except
-    /// for the sender.
     async fn broadcast(&mut self, command: VoyeursCommand) {
+        dbg!(&command);
         for peer in self.peers.iter_mut() {
             peer.1
+                .tx
                 .write_all(&command.clone().craft_packet().compile())
                 .await
                 .unwrap();
@@ -79,9 +84,11 @@ impl Shared {
     }
 
     async fn broadcast_excluding(&mut self, command: VoyeursCommand, addr: SocketAddr) {
+        dbg!(&command, addr);
         for peer in self.peers.iter_mut() {
             if *peer.0 != addr {
                 peer.1
+                    .tx
                     .write_all(&command.clone().craft_packet().compile())
                     .await
                     .unwrap();
@@ -134,7 +141,7 @@ async fn main() {
     let state = Arc::new(Mutex::new(Shared::new()));
 
     let cloned_state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || process_mpv_event(mpv, cloned_state));
+    tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state));
 
     // Handle server
     if args.serve {
@@ -185,186 +192,5 @@ async fn main() {
             .await
         });
         let _ = tokio::join!(communication_task);
-    }
-}
-
-async fn handle_connection(
-    mut mpv: Mpv,
-    addr: SocketAddr,
-    stream: TcpStream,
-    state: Arc<Mutex<Shared>>,
-    is_serving: bool,
-    username: &str,
-    accept_source: bool,
-) {
-    println!("accepted connection");
-    let (rx, tx) = stream.into_split();
-    let reader = PacketReader::new(rx);
-    state.lock().await.peers.insert(addr, tx);
-
-    if !is_serving {
-        if accept_source {
-            state
-                .lock()
-                .await
-                .send(addr, VoyeursCommand::GetStreamName)
-                .await
-        } else {
-            while !matches!(mpv.event_listen().unwrap(), Event::FileLoaded) {}
-            if !accept_source {
-                state
-                    .lock()
-                    .await
-                    .send(addr, VoyeursCommand::NewConnection(username.to_string()))
-                    .await
-            }
-        }
-    }
-
-    loop {
-        match reader.read_packet().await {
-            Ok(packet) => {
-                match dbg!(packet.command) {
-                    VoyeursCommand::Pause(p) => {
-                        let mut s = state.lock().await;
-                        s.ignore_next = true;
-                        mpv.set_property("pause", p).unwrap();
-                        if is_serving {
-                            s.broadcast_excluding(VoyeursCommand::Pause(p), addr).await;
-                        }
-                    }
-                    VoyeursCommand::Seek(t) => {
-                        let current_time: f64 =
-                            mpv.get_property("playback-time").unwrap_or_default();
-                        let mut s = state.lock().await;
-                        if t != current_time {
-                            s.ignore_next = true;
-
-                            mpv.seek(t, SeekOptions::Absolute).unwrap();
-
-                            if is_serving {
-                                s.broadcast_excluding(VoyeursCommand::Seek(t), addr).await;
-                            }
-                        }
-                    }
-                    VoyeursCommand::NewConnection(username) => {
-                        if !username.chars().all(char::is_alphanumeric) {
-                            break;
-                        }
-                        mpv.pause().unwrap();
-                        mpv.run_command_raw(
-                            "show-text",
-                            &vec![format!("{username}: connected").as_str(), "2000"],
-                        )
-                        .unwrap();
-
-                        let filename = mpv.get_property("filename").unwrap_or_default();
-                        let duration = mpv.get_property("duration").unwrap_or_default();
-                        let pause = mpv.get_property("pause").unwrap_or_default();
-                        let current_time = mpv.get_property("playback-time").unwrap_or_default();
-                        let mut s = state.lock().await;
-                        s.send(addr, VoyeursCommand::Filename(filename)).await;
-                        s.send(addr, VoyeursCommand::Duration(duration)).await;
-                        s.send(addr, VoyeursCommand::Seek(current_time)).await;
-                        s.send(addr, VoyeursCommand::Pause(pause)).await;
-                    }
-                    VoyeursCommand::GetStreamName => {
-                        if is_serving {
-                            // Check if path is a valid URL
-                            // TODO: the correct way to check this is by using stream-open-filename and parsing its data
-
-                            let mut streamname =
-                                mpv.get_property_string("path").unwrap_or_default();
-                            if Url::parse(&streamname).is_err() {
-                                streamname = "".to_owned();
-                            }
-                            let mut s = state.lock().await;
-                            s.send(addr, VoyeursCommand::StreamName(streamname)).await;
-                        }
-                    }
-                    VoyeursCommand::StreamName(stream) => {
-                        if accept_source {
-                            if stream.is_empty() {
-                                println!("Server is not streaming from a valid url")
-                            }
-                            mpv.run_command(MpvCommand::LoadFile {
-                                file: stream.to_string(),
-                                option: PlaylistAddOptions::Replace,
-                            })
-                            .unwrap();
-                            while !matches!(mpv.event_listen().unwrap(), Event::FileLoaded) {}
-                            let mut s = state.lock().await;
-                            s.send(addr, VoyeursCommand::NewConnection(username.to_string()))
-                                .await
-                        }
-                    }
-                    VoyeursCommand::Filename(f) => {
-                        if f != mpv.get_property::<String>("filename").unwrap_or_default() {
-                            mpv.run_command_raw(
-                                "show-text",
-                                &vec!["filename does not match with server's filename", "2000"],
-                            )
-                            .unwrap();
-                        }
-                    }
-                    VoyeursCommand::Duration(t) => {
-                        if t != mpv.get_property::<f64>("duration").unwrap_or_default() {
-                            mpv.run_command_raw(
-                                "show-text",
-                                &vec!["duration does not match with server's duration", "2000"],
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                println!("Disconnected peer");
-                state.lock().await.peers.remove(&addr).unwrap().forget();
-                break;
-            }
-        };
-    }
-}
-
-fn process_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>) {
-    let rt = Runtime::new().unwrap();
-    let handle = rt.handle();
-    loop {
-        let event = mpv.event_listen().unwrap();
-        let mut s = handle.block_on(state.lock());
-        if dbg!(s.ignore_next) {
-            s.ignore_next = false;
-            continue;
-        }
-        match event {
-            Event::Shutdown => exit(0),
-            Event::EndFile => exit(0),
-            Event::PropertyChange { id: _, property } => match property {
-                Property::Path(_) => todo!(),
-                Property::Pause(p) => {
-                    handle.block_on(s.broadcast(VoyeursCommand::Pause(p)));
-                }
-                Property::Unknown { name, data } => match name.as_str() {
-                    "seeking" => {
-                        println!("seeking:{:?}", data);
-                        match data {
-                            MpvDataType::Bool(false) => {
-                                let current_time =
-                                    mpv.get_property("playback-time").unwrap_or_default();
-                                handle.block_on(s.broadcast(VoyeursCommand::Seek(current_time)));
-                            }
-                            MpvDataType::Bool(true) => {
-                                println!("Houston we have a buffering problem");
-                            }
-                            _ => {}
-                        }
-                    }
-                    _ => todo!(),
-                },
-                _ => todo!(),
-            },
-            _ => {}
-        }
     }
 }

@@ -114,7 +114,7 @@ impl Packet {
 
 pub enum VoyeursCommand {
     NewConnection(String), // 0x00
-    Pause(bool),           // 0x01
+    Ready(bool),           // 0x01
     Seek(f64),             // 0x02
     Filename(String),      // 0x03
     Duration(f64),         // 0x04
@@ -133,7 +133,7 @@ impl VoyeursCommand {
                 args.append(&mut PROTOCOL_VERSION.to_be_bytes().to_vec());
                 args.append(&mut name.as_bytes().to_vec());
             }
-            VoyeursCommand::Pause(p) => {
+            VoyeursCommand::Ready(p) => {
                 cmd_code = 0x01;
                 args = [p.clone() as u8].to_vec();
             }
@@ -176,7 +176,7 @@ impl VoyeursCommand {
                     args[2..].to_vec(),
                 )?))
             }
-            0x01 => Ok(VoyeursCommand::Pause(*args.get(0).unwrap() == 1)),
+            0x01 => Ok(VoyeursCommand::Ready(*args.get(0).unwrap() == 1)),
             0x02 => {
                 let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
                 Ok(VoyeursCommand::Seek(time))
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_command_parser() {
         check_parse(VoyeursCommand::NewConnection("test".to_string()));
-        check_parse(VoyeursCommand::Pause(false));
+        check_parse(VoyeursCommand::Ready(false));
         check_parse(VoyeursCommand::Seek(0.0));
         check_parse(VoyeursCommand::Filename("test".to_string()));
         check_parse(VoyeursCommand::Duration(1.0));
