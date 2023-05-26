@@ -32,6 +32,10 @@ struct Cli {
     #[arg(short, long, default_value = "user")]
     username: String,
 
+    /// username that will be sent to the server
+    #[arg(long)]
+    standalone: bool,
+
     /// address:port to connect/bind to  
     #[arg(value_name = "ADDRESS")]
     address: String,
@@ -141,7 +145,7 @@ async fn main() {
     let state = Arc::new(Mutex::new(Shared::new()));
 
     let cloned_state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state));
+    tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
 
     // Handle server
     if args.serve {
@@ -161,7 +165,17 @@ async fn main() {
 
             // Spawn our handler to be run asynchronously.
             tokio::spawn(async move {
-                handle_connection(mpv, addr, stream, state, true, "server", false).await
+                handle_connection(
+                    mpv,
+                    addr,
+                    stream,
+                    state,
+                    true,
+                    "server",
+                    false,
+                    args.standalone,
+                )
+                .await
             });
         }
     }
@@ -188,6 +202,7 @@ async fn main() {
                 false,
                 &args.username,
                 args.accept_source,
+                args.standalone,
             )
             .await
         });

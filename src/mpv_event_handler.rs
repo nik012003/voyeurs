@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::{proto::*, Shared};
 
-pub fn handle_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>) {
+pub fn handle_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>, standalone: bool) {
     let rt = Runtime::new().unwrap();
     let handle = rt.handle();
 
@@ -23,22 +23,26 @@ pub fn handle_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>) {
             Event::PropertyChange { id: _, property } => match property {
                 Property::Path(_) => todo!(),
                 Property::Pause(p) => {
-                    s.is_ready = dbg!(!p);
-                    match s.is_ready {
-                        false => {
-                            handle.block_on(s.broadcast(VoyeursCommand::Ready(false)));
-                        }
-                        true => {
-                            if s.peers.values().into_iter().any(|r| !r.ready) {
-                                mpv.run_command_raw(
-                                    "show-text",
-                                    &vec!["Somebody isn't ready", "2000"],
-                                )
-                                .unwrap();
-                                s.ignore_next = true;
-                                mpv.pause().unwrap();
+                    if standalone {
+                        handle.block_on(s.broadcast(VoyeursCommand::Ready(!p)));
+                    } else {
+                        s.is_ready = !p;
+                        match s.is_ready {
+                            false => {
+                                handle.block_on(s.broadcast(VoyeursCommand::Ready(false)));
                             }
-                            handle.block_on(s.broadcast(VoyeursCommand::Ready(true)));
+                            true => {
+                                if s.peers.values().into_iter().any(|r| !r.ready) {
+                                    mpv.run_command_raw(
+                                        "show-text",
+                                        &vec!["Somebody isn't ready", "2000"],
+                                    )
+                                    .unwrap();
+                                    s.ignore_next = true;
+                                    mpv.pause().unwrap();
+                                }
+                                handle.block_on(s.broadcast(VoyeursCommand::Ready(true)));
+                            }
                         }
                     }
                 }

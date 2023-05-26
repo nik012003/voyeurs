@@ -15,6 +15,7 @@ pub async fn handle_connection(
     is_serving: bool,
     username: &str,
     accept_source: bool,
+    standalone: bool,
 ) {
     println!("accepted connection");
     let (rx, tx) = stream.into_split();
@@ -53,29 +54,39 @@ pub async fn handle_connection(
                 match packet.command {
                     VoyeursCommand::Ready(p) => {
                         let mut s = state.lock().await;
-                        s.peers.get_mut(&addr).unwrap().ready = p;
-                        match p {
-                            false => {
-                                if !mpv.get_property::<bool>("pause").unwrap() {
-                                    s.ignore_next = true;
-                                    mpv.set_property("pause", true).unwrap();
-                                }
-                                if is_serving {
-                                    s.broadcast_excluding(VoyeursCommand::Ready(false), addr)
-                                        .await;
-                                }
+                        if standalone {
+                            if mpv.get_property::<bool>("pause").unwrap() == p {
+                                s.ignore_next = true;
+                                mpv.set_property("pause", !p).unwrap();
                             }
-                            true => {
-                                if dbg!(s.is_ready)
-                                    && dbg!(s.peers.values().into_iter().all(|r| r.ready))
-                                {
-                                    if mpv.get_property::<bool>("pause").unwrap() {
+                            if is_serving {
+                                s.broadcast(VoyeursCommand::Ready(p)).await;
+                            }
+                        } else {
+                            s.peers.get_mut(&addr).unwrap().ready = p;
+                            match p {
+                                false => {
+                                    if !mpv.get_property::<bool>("pause").unwrap() {
                                         s.ignore_next = true;
-                                        mpv.set_property("pause", false).unwrap();
+                                        mpv.set_property("pause", true).unwrap();
                                     }
-
                                     if is_serving {
-                                        s.broadcast(VoyeursCommand::Ready(true)).await;
+                                        s.broadcast_excluding(VoyeursCommand::Ready(false), addr)
+                                            .await;
+                                    }
+                                }
+                                true => {
+                                    if dbg!(s.is_ready)
+                                        && dbg!(s.peers.values().into_iter().all(|r| r.ready))
+                                    {
+                                        if mpv.get_property::<bool>("pause").unwrap() {
+                                            s.ignore_next = true;
+                                            mpv.set_property("pause", false).unwrap();
+                                        }
+
+                                        if is_serving {
+                                            s.broadcast(VoyeursCommand::Ready(true)).await;
+                                        }
                                     }
                                 }
                             }
@@ -173,7 +184,7 @@ pub async fn handle_connection(
                 let peer = s.peers.remove(&addr).unwrap();
                 mpv.run_command_raw(
                     "show-text",
-                    &vec![&format!("{} : disconnected", peer.username), "2000"],
+                    &vec![format!("{} : disconnected", peer.username).as_str(), "2000"],
                 )
                 .unwrap();
                 peer.tx.forget();
