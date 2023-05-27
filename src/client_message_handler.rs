@@ -37,14 +37,11 @@ pub async fn handle_connection(
                 .send(addr, VoyeursCommand::GetStreamName)
                 .await
         } else {
-            while !matches!(mpv.event_listen().unwrap(), Event::FileLoaded) {}
-            if !accept_source {
-                state
-                    .lock()
-                    .await
-                    .send(addr, VoyeursCommand::NewConnection(username.to_string()))
-                    .await
-            }
+            state
+                .lock()
+                .await
+                .send(addr, VoyeursCommand::NewConnection(username.to_string()))
+                .await
         }
     }
 
@@ -99,7 +96,8 @@ pub async fn handle_connection(
                         if t != current_time {
                             s.ignore_next = true;
 
-                            mpv.seek(t, SeekOptions::Absolute).unwrap();
+                            // If the file isn't loaded yet, the seek will fail
+                            while mpv.seek(t, SeekOptions::Absolute).is_err() {}
 
                             if is_serving {
                                 s.broadcast_excluding(VoyeursCommand::Seek(t), addr).await;

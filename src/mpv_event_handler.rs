@@ -7,6 +7,10 @@ use tokio::sync::Mutex;
 use crate::{proto::*, Shared};
 
 pub fn handle_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>, standalone: bool) {
+    // setup necessary property observers
+    mpv.observe_property(0, "pause").unwrap();
+    mpv.observe_property(1, "seeking").unwrap();
+
     let rt = Runtime::new().unwrap();
     let handle = rt.handle();
 

@@ -157,7 +157,6 @@ async fn main() {
             .await
             .expect("Could not connect to server");
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
-        let cloned_mpv = mpv.clone();
         let communication_task = tokio::spawn(async move {
             handle_connection(
                 mpv,
@@ -171,9 +170,8 @@ async fn main() {
             )
             .await
         });
-        tokio::task::spawn_blocking(move || {
-            handle_mpv_event(cloned_mpv, cloned_state, args.standalone)
-        });
+        let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
+        tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
         let _ = tokio::join!(communication_task);
     }
 }
@@ -207,13 +205,10 @@ fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> String {
         mpv = Mpv::connect(mpv_socket.as_str());
     }
     let mpv = mpv.unwrap();
-
-    // setup necessary property observers
-
-    mpv.observe_property(0, "pause").unwrap();
-    mpv.observe_property(1, "seeking").unwrap();
+    mpv.pause().unwrap();
 
     mpv.run_command_raw("show-text", &vec!["Connected to voyeurs", "5000"])
         .unwrap();
+
     mpv_socket
 }
