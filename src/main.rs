@@ -105,47 +105,10 @@ impl Shared {
 async fn main() {
     let args = Cli::parse();
 
-    // generate temp path for the socket
-    let binding = tempdir()
-        .expect("Failed to create a tmp directory for the mpv socket")
-        .into_path()
-        .join("mpv.sock");
-    let mpv_socket = binding.to_str().unwrap().to_owned();
-
-    // start mpv
-    let mut gui_mode_args = vec![];
-    if args.accept_source {
-        gui_mode_args.push("--player-operation-mode=pseudo-gui".to_string());
-    }
-
-    Command::new("mpv")
-        .arg(format!("--input-ipc-server={}", mpv_socket))
-        .args(gui_mode_args)
-        .args(args.mpv_args)
-        .spawn()
-        .expect("failed to execute mpv");
-
-    // enstabilish a connection to the mpv socket
-    let mut mpv: Result<Mpv, Error> = Err(mpvipc::Error(mpvipc::ErrorCode::ConnectError(
-        "Not yet connected".to_owned(),
-    )));
-    while mpv.is_err() {
-        mpv = Mpv::connect(mpv_socket.as_str());
-    }
-    let mpv = mpv.unwrap();
-
-    // setup necessary property observers
-
-    mpv.observe_property(0, "pause").unwrap();
-    mpv.observe_property(1, "seeking").unwrap();
-
-    mpv.run_command_raw("show-text", &vec!["Connected to voyeurs", "5000"])
-        .unwrap();
-
     let state = Arc::new(Mutex::new(Shared::new()));
 
     let cloned_state = Arc::clone(&state);
-    tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
+    let mpv_socket = start_mpv(args.accept_source, args.mpv_args);
 
     // Handle server
     if args.serve {
@@ -153,6 +116,8 @@ async fn main() {
             .await
             .expect(&format!("Couldn't bind address to {}", args.address));
         println!("Starting server on {}", args.address);
+        let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
+        tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
         loop {
             let (stream, addr) = listener.accept().await.unwrap();
             // Asynchronously wait for an inbound TcpStream.
@@ -192,7 +157,7 @@ async fn main() {
             .await
             .expect("Could not connect to server");
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
-
+        let cloned_mpv = mpv.clone();
         let communication_task = tokio::spawn(async move {
             handle_connection(
                 mpv,
@@ -206,6 +171,49 @@ async fn main() {
             )
             .await
         });
+        tokio::task::spawn_blocking(move || {
+            handle_mpv_event(cloned_mpv, cloned_state, args.standalone)
+        });
         let _ = tokio::join!(communication_task);
     }
+}
+
+fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> String {
+    // generate temp path for the socket
+    let binding = tempdir()
+        .expect("Failed to create a tmp directory for the mpv socket")
+        .into_path()
+        .join("mpv.sock");
+    let mpv_socket = binding.to_str().unwrap().to_owned();
+
+    // start mpv
+    let mut gui_mode_args = vec![];
+    if accept_source {
+        gui_mode_args.push("--player-operation-mode=pseudo-gui".to_string());
+    }
+
+    Command::new("mpv")
+        .arg(format!("--input-ipc-server={}", mpv_socket))
+        .args(gui_mode_args)
+        .args(mpv_args)
+        .spawn()
+        .expect("failed to execute mpv");
+
+    // enstabilish a connection to the mpv socket
+    let mut mpv: Result<Mpv, Error> = Err(mpvipc::Error(mpvipc::ErrorCode::ConnectError(
+        "Not yet connected".to_owned(),
+    )));
+    while mpv.is_err() {
+        mpv = Mpv::connect(mpv_socket.as_str());
+    }
+    let mpv = mpv.unwrap();
+
+    // setup necessary property observers
+
+    mpv.observe_property(0, "pause").unwrap();
+    mpv.observe_property(1, "seeking").unwrap();
+
+    mpv.run_command_raw("show-text", &vec!["Connected to voyeurs", "5000"])
+        .unwrap();
+    mpv_socket
 }
