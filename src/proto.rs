@@ -77,10 +77,8 @@ impl PacketReader {
         let len = LenSize::from_be_bytes(len);
 
         let mut args: Vec<u8> = vec![0; len as usize];
-        if len > 0 {
-            if self.inner.try_read(&mut args)? != len as usize {
-                return Err(Box::new(TooShort));
-            }
+        if len > 0 && self.inner.try_read(&mut args)? != len as usize {
+            return Err(Box::new(TooShort));
         }
 
         let command = VoyeursCommand::from_bytes(cmd_code, args)?;
@@ -100,12 +98,12 @@ impl Packet {
         let mut payload: Vec<u8> = vec![];
         payload.append(self.timestamp.to_be_bytes().to_vec().as_mut());
 
-        let (cmd_code, args) = self.command.to_bytes();
+        let (cmd_code, mut args) = self.command.to_bytes();
 
         payload.push(cmd_code);
         let mut len = (args.len() as LenSize).to_be_bytes().to_vec();
         payload.append(&mut len);
-        payload.append(args.clone().as_mut());
+        payload.append(&mut args);
         payload
     }
 }
@@ -135,7 +133,7 @@ impl VoyeursCommand {
             }
             VoyeursCommand::Ready(p) => {
                 cmd_code = 0x01;
-                args = [p.clone() as u8].to_vec();
+                args = [*p as u8].to_vec();
             }
             VoyeursCommand::Seek(t) => {
                 cmd_code = 0x02;
@@ -176,7 +174,7 @@ impl VoyeursCommand {
                     args[2..].to_vec(),
                 )?))
             }
-            0x01 => Ok(VoyeursCommand::Ready(*args.get(0).unwrap() == 1)),
+            0x01 => Ok(VoyeursCommand::Ready(*args.first().unwrap() == 1)),
             0x02 => {
                 let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
                 Ok(VoyeursCommand::Seek(time))
@@ -188,7 +186,7 @@ impl VoyeursCommand {
             }
             0x05 => Ok(VoyeursCommand::StreamName(String::from_utf8(args)?)),
             0x06 => Ok(VoyeursCommand::GetStreamName),
-            cmd => return Err(Box::new(UnkownCommand { cmd })),
+            cmd => Err(Box::new(UnkownCommand { cmd })),
         }
     }
 

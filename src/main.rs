@@ -100,6 +100,13 @@ impl Shared {
         }
     }
 }
+#[derive(Clone, Debug)]
+pub struct Settings {
+    is_serving: bool,
+    username: String,
+    accept_source: bool,
+    standalone: bool,
+}
 
 #[tokio::main]
 async fn main() {
@@ -109,12 +116,17 @@ async fn main() {
 
     let cloned_state = Arc::clone(&state);
     let mpv_socket = start_mpv(args.accept_source, args.mpv_args);
-
+    let settings = Settings {
+        is_serving: args.serve,
+        username: args.username,
+        accept_source: args.accept_source,
+        standalone: args.standalone,
+    };
     // Handle server
     if args.serve {
         let listener = TcpListener::bind(&args.address)
             .await
-            .expect(&format!("Couldn't bind address to {}", args.address));
+            .expect("Couldn't bind address");
         println!("Starting server on {}", args.address);
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
         tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
@@ -129,18 +141,9 @@ async fn main() {
                 Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
 
             // Spawn our handler to be run asynchronously.
+            let cloned_settings = settings.clone();
             tokio::spawn(async move {
-                handle_connection(
-                    mpv,
-                    addr,
-                    stream,
-                    state,
-                    true,
-                    "server",
-                    false,
-                    args.standalone,
-                )
-                .await
+                handle_connection(mpv, addr, stream, state, cloned_settings).await
             });
         }
     }
@@ -157,19 +160,10 @@ async fn main() {
             .await
             .expect("Could not connect to server");
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
-        let communication_task = tokio::spawn(async move {
-            handle_connection(
-                mpv,
-                addr,
-                stream,
-                state,
-                false,
-                &args.username,
-                args.accept_source,
-                args.standalone,
-            )
-            .await
-        });
+        let communication_task =
+            tokio::spawn(
+                async move { handle_connection(mpv, addr, stream, state, settings).await },
+            );
         let mpv = Mpv::connect(mpv_socket.as_str()).expect("Task coudln't attach to mpv socket");
         tokio::task::spawn_blocking(move || handle_mpv_event(mpv, cloned_state, args.standalone));
         let _ = tokio::join!(communication_task);
@@ -207,7 +201,7 @@ fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> String {
     let mpv = mpv.unwrap();
     mpv.pause().unwrap();
 
-    mpv.run_command_raw("show-text", &vec!["Connected to voyeurs", "5000"])
+    mpv.run_command_raw("show-text", &["Connected to voyeurs", "5000"])
         .unwrap();
 
     mpv_socket
