@@ -1,21 +1,17 @@
 use mpvipc::Mpv;
 use mpvipc::*;
-use std::vec;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{net::TcpStream, sync::Mutex};
 use url::Url;
 
-use crate::{proto::*, Peer, Shared};
+use crate::{proto::*, Peer, Settings, Shared};
 
 pub async fn handle_connection(
     mut mpv: Mpv,
     addr: SocketAddr,
     stream: TcpStream,
     state: Arc<Mutex<Shared>>,
-    is_serving: bool,
-    username: &str,
-    accept_source: bool,
-    standalone: bool,
+    settings: Settings,
 ) {
     println!("accepted connection");
     let (rx, tx) = stream.into_split();
@@ -29,8 +25,8 @@ pub async fn handle_connection(
         },
     );
 
-    if !is_serving {
-        if accept_source {
+    if !settings.is_serving {
+        if settings.accept_source {
             state
                 .lock()
                 .await
@@ -40,7 +36,10 @@ pub async fn handle_connection(
             state
                 .lock()
                 .await
-                .send(addr, VoyeursCommand::NewConnection(username.to_string()))
+                .send(
+                    addr,
+                    VoyeursCommand::NewConnection(settings.username.to_string()),
+                )
                 .await
         }
     }
@@ -51,12 +50,12 @@ pub async fn handle_connection(
                 match packet.command {
                     VoyeursCommand::Ready(p) => {
                         let mut s = state.lock().await;
-                        if standalone {
+                        if settings.standalone {
                             if mpv.get_property::<bool>("pause").unwrap() == p {
                                 s.ignore_next = true;
                                 mpv.set_property("pause", !p).unwrap();
                             }
-                            if is_serving {
+                            if settings.is_serving {
                                 s.broadcast(VoyeursCommand::Ready(p)).await;
                             }
                         } else {
@@ -67,21 +66,19 @@ pub async fn handle_connection(
                                         s.ignore_next = true;
                                         mpv.set_property("pause", true).unwrap();
                                     }
-                                    if is_serving {
+                                    if settings.is_serving {
                                         s.broadcast_excluding(VoyeursCommand::Ready(false), addr)
                                             .await;
                                     }
                                 }
                                 true => {
-                                    if dbg!(s.is_ready)
-                                        && dbg!(s.peers.values().into_iter().all(|r| r.ready))
-                                    {
+                                    if dbg!(s.is_ready) && dbg!(s.peers.values().all(|r| r.ready)) {
                                         if mpv.get_property::<bool>("pause").unwrap() {
                                             s.ignore_next = true;
                                             mpv.set_property("pause", false).unwrap();
                                         }
 
-                                        if is_serving {
+                                        if settings.is_serving {
                                             s.broadcast(VoyeursCommand::Ready(true)).await;
                                         }
                                     }
@@ -99,7 +96,7 @@ pub async fn handle_connection(
                             // If the file isn't loaded yet, the seek will fail
                             while mpv.seek(t, SeekOptions::Absolute).is_err() {}
 
-                            if is_serving {
+                            if settings.is_serving {
                                 s.broadcast_excluding(VoyeursCommand::Seek(t), addr).await;
                             }
                         }
@@ -112,7 +109,7 @@ pub async fn handle_connection(
                         mpv.pause().unwrap();
                         mpv.run_command_raw(
                             "show-text",
-                            &vec![format!("{username}: connected").as_str(), "2000"],
+                            &[format!("{username}: connected").as_str(), "2000"],
                         )
                         .unwrap();
 
@@ -128,7 +125,7 @@ pub async fn handle_connection(
                         s.send(addr, VoyeursCommand::Ready(!pause)).await;
                     }
                     VoyeursCommand::GetStreamName => {
-                        if is_serving {
+                        if settings.is_serving {
                             // Check if path is a valid URL
                             // TODO: the correct way to check this is by using stream-open-filename and parsing its data
 
@@ -142,7 +139,7 @@ pub async fn handle_connection(
                         }
                     }
                     VoyeursCommand::StreamName(stream) => {
-                        if accept_source {
+                        if settings.accept_source {
                             if stream.is_empty() {
                                 println!("Server is not streaming from a valid url")
                             }
@@ -153,15 +150,18 @@ pub async fn handle_connection(
                             .unwrap();
                             while !matches!(mpv.event_listen().unwrap(), Event::FileLoaded) {}
                             let mut s = state.lock().await;
-                            s.send(addr, VoyeursCommand::NewConnection(username.to_string()))
-                                .await
+                            s.send(
+                                addr,
+                                VoyeursCommand::NewConnection(settings.username.to_string()),
+                            )
+                            .await
                         }
                     }
                     VoyeursCommand::Filename(f) => {
                         if f != mpv.get_property::<String>("filename").unwrap_or_default() {
                             mpv.run_command_raw(
                                 "show-text",
-                                &vec!["filename does not match with server's filename", "2000"],
+                                &["filename does not match with server's filename", "2000"],
                             )
                             .unwrap();
                         }
@@ -170,7 +170,7 @@ pub async fn handle_connection(
                         if t != mpv.get_property::<f64>("duration").unwrap_or_default() {
                             mpv.run_command_raw(
                                 "show-text",
-                                &vec!["duration does not match with server's duration", "2000"],
+                                &["duration does not match with server's duration", "2000"],
                             )
                             .unwrap();
                         }
@@ -182,7 +182,7 @@ pub async fn handle_connection(
                 let peer = s.peers.remove(&addr).unwrap();
                 mpv.run_command_raw(
                     "show-text",
-                    &vec![format!("{} : disconnected", peer.username).as_str(), "2000"],
+                    &[format!("{} : disconnected", peer.username).as_str(), "2000"],
                 )
                 .unwrap();
                 peer.tx.forget();

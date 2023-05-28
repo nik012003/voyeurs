@@ -36,10 +36,10 @@ pub fn handle_mpv_event(mut mpv: Mpv, state: Arc<Mutex<Shared>>, standalone: boo
                                 handle.block_on(s.broadcast(VoyeursCommand::Ready(false)));
                             }
                             true => {
-                                if s.peers.values().into_iter().any(|r| !r.ready) {
+                                if s.peers.values().any(|r| !r.ready) {
                                     mpv.run_command_raw(
                                         "show-text",
-                                        &vec!["Somebody isn't ready", "2000"],
+                                        &["Somebody isn't ready", "2000"],
                                     )
                                     .unwrap();
                                     s.ignore_next = true;
