@@ -11,7 +11,7 @@ exclude = ["/.vscode"]
 clap = { version = "4.3.0", features = ["derive"] }
 mpvipc = "1.2.2"
 tempfile = "3.5.0"
-tokio = { version = "1.28.1" , features = ["full"] }
+tokio = { version = "1.28.1", features = ["full"] }
 url = "2.3.1"
 
 [profile.release]

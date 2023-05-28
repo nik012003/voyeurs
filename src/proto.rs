@@ -174,7 +174,7 @@ impl VoyeursCommand {
                     args[2..].to_vec(),
                 )?))
             }
-            0x01 => Ok(VoyeursCommand::Ready(*args.first().unwrap() == 1)),
+            0x01 => Ok(VoyeursCommand::Ready(*args.first().ok_or(TooShort)? == 1)),
             0x02 => {
                 let time: f64 = f64::from_be_bytes(args.get(0..8).ok_or(TooShort)?.try_into()?);
                 Ok(VoyeursCommand::Seek(time))
@@ -193,7 +193,7 @@ impl VoyeursCommand {
     pub fn craft_packet(self) -> Packet {
         let timestamp: TsSize = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("Couldn't get system time")
             .as_millis() as TsSize;
         Packet {
             timestamp,

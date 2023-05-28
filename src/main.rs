@@ -115,13 +115,16 @@ async fn main() {
     let state = Arc::new(Mutex::new(Shared::new()));
 
     let cloned_state = Arc::clone(&state);
-    let mpv_socket = start_mpv(args.accept_source, args.mpv_args);
+    let mpv_socket =
+        start_mpv(args.accept_source, args.mpv_args).expect("Coudln't start or connect to mpv");
+
     let settings = Settings {
         is_serving: args.serve,
         username: args.username,
         accept_source: args.accept_source,
         standalone: args.standalone,
     };
+
     // Handle server
     if args.serve {
         let listener = TcpListener::bind(&args.address)
@@ -170,13 +173,16 @@ async fn main() {
     }
 }
 
-fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> String {
+fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> Result<String, Error> {
     // generate temp path for the socket
     let binding = tempdir()
         .expect("Failed to create a tmp directory for the mpv socket")
         .into_path()
         .join("mpv.sock");
-    let mpv_socket = binding.to_str().unwrap().to_owned();
+    let mpv_socket = binding
+        .to_str()
+        .expect("Path isn't valid unicode")
+        .to_owned();
 
     // start mpv
     let mut gui_mode_args = vec![];
@@ -198,11 +204,10 @@ fn start_mpv(accept_source: bool, mpv_args: Vec<String>) -> String {
     while mpv.is_err() {
         mpv = Mpv::connect(mpv_socket.as_str());
     }
-    let mpv = mpv.unwrap();
-    mpv.pause().unwrap();
+    let mpv = mpv?;
+    mpv.pause()?;
 
-    mpv.run_command_raw("show-text", &["Connected to voyeurs", "5000"])
-        .unwrap();
+    mpv.run_command_raw("show-text", &["Connected to voyeurs", "5000"])?;
 
-    mpv_socket
+    Ok(mpv_socket)
 }
