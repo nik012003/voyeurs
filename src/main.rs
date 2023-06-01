@@ -7,7 +7,9 @@ use client_message_handler::*;
 use mpv_event_handler::*;
 use mpvipc::*;
 use proto::*;
+use rsntp::SntpClient;
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use std::{collections::HashMap, process::Command, sync::Arc};
 use tempfile::tempdir;
@@ -35,6 +37,18 @@ struct Cli {
     /// username that will be sent to the server
     #[arg(long)]
     standalone: bool,
+
+    /// use system time instead of ntp (not reccomended)
+    #[arg(short, long)]
+    trust_system_time: bool,
+
+    /// address of the ntp server
+    #[arg(
+        long,
+        conflicts_with = "trust_system_time",
+        default_value = "pool.ntp.org"
+    )]
+    ntp_server: String,
 
     /// address:port to connect/bind to  
     #[arg(value_name = "ADDRESS")]
@@ -111,6 +125,20 @@ pub struct Settings {
 #[tokio::main]
 async fn main() {
     let args = Cli::parse();
+
+    if !args.trust_system_time {
+        let client = SntpClient::new();
+        let result = client
+            .synchronize(args.ntp_server)
+            .expect("Coudn't syncronize time with ntp server");
+        let delta: i64 = result.datetime().unix_timestamp().expect("msg").as_millis() as i64
+            - SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Couldn't get system time")
+                .as_millis() as i64;
+        println!("Clock skew: {} ms", delta);
+        TIME_DELTA.store(delta, std::sync::atomic::Ordering::SeqCst);
+    }
 
     let state = Arc::new(Mutex::new(Shared::new()));
 

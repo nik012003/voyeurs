@@ -1,4 +1,7 @@
+use lazy_static::lazy_static;
 use std::mem::size_of;
+use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use std::{error::Error, fmt};
@@ -14,9 +17,13 @@ const PROTOCOL_VERSION: u16 = 1;
 // ^               ^          ^             ^                 ^
 // |    8 bytes    |  1 byte  |   2 bytes   |  $lenght bytes  |
 
-type TsSize = u64;
-type CmdSize = u8;
-type LenSize = u16;
+pub type TsSize = u64;
+pub type CmdSize = u8;
+pub type LenSize = u16;
+
+lazy_static! {
+    pub static ref TIME_DELTA: Arc<AtomicI64> = Arc::new(AtomicI64::new(0));
+}
 
 pub struct PacketReader {
     pub inner: OwnedReadHalf,
@@ -191,12 +198,14 @@ impl VoyeursCommand {
     }
 
     pub fn craft_packet(self) -> Packet {
-        let timestamp: TsSize = SystemTime::now()
+        let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Couldn't get system time")
-            .as_millis() as TsSize;
+            .as_millis() as i64
+            + TIME_DELTA.load(std::sync::atomic::Ordering::SeqCst);
+
         Packet {
-            timestamp,
+            timestamp: timestamp.try_into().unwrap(),
             command: self,
         }
     }
