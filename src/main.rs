@@ -1,18 +1,19 @@
 mod client_message_handler;
 mod mpv_event_handler;
 mod proto;
+mod time;
 
 use clap::Parser;
 use client_message_handler::*;
 use mpv_event_handler::*;
 use mpvipc::*;
 use proto::*;
-use rsntp::SntpClient;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec;
 use std::{collections::HashMap, process::Command, sync::Arc};
 use tempfile::tempdir;
+use time::set_time_delta;
 use tokio::{
     io::AsyncWriteExt,
     net::{lookup_host, tcp::OwnedWriteHalf, TcpListener, TcpStream},
@@ -63,6 +64,7 @@ pub struct Peer {
     tx: OwnedWriteHalf,
     username: String,
     ready: bool,
+    latency: VecDeque<u64>,
 }
 
 pub struct Shared {
@@ -127,17 +129,7 @@ async fn main() {
     let args = Cli::parse();
 
     if !args.trust_system_time {
-        let client = SntpClient::new();
-        let result = client
-            .synchronize(args.ntp_server)
-            .expect("Coudn't syncronize time with ntp server");
-        let delta: i64 = result.datetime().unix_timestamp().expect("msg").as_millis() as i64
-            - SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Couldn't get system time")
-                .as_millis() as i64;
-        println!("Clock skew: {} ms", delta);
-        TIME_DELTA.store(delta, std::sync::atomic::Ordering::SeqCst);
+        set_time_delta(args.ntp_server);
     }
 
     let state = Arc::new(Mutex::new(Shared::new()));

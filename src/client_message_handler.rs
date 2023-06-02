@@ -1,10 +1,14 @@
 use mpvipc::Mpv;
 use mpvipc::*;
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc};
 use tokio::{net::TcpStream, sync::Mutex};
 use url::Url;
 
-use crate::{proto::*, Peer, Settings, Shared};
+use crate::{
+    proto::*,
+    time::{get_timestamp, get_weighted_latency, MAX_QUEUE_LATENCY},
+    Peer, Settings, Shared,
+};
 
 pub async fn handle_connection(
     mut mpv: Mpv,
@@ -22,6 +26,7 @@ pub async fn handle_connection(
             tx,
             username: Default::default(),
             ready: false,
+            latency: VecDeque::with_capacity(MAX_QUEUE_LATENCY),
         },
     );
 
@@ -47,9 +52,23 @@ pub async fn handle_connection(
     loop {
         match reader.read_packet().await {
             Ok(packet) => {
+                let mut s = state.lock().await;
+
+                let t_delta = get_timestamp() - packet.timestamp;
+                let latency_vec = &mut s.peers.get_mut(&addr).unwrap().latency;
+                if latency_vec.len() == MAX_QUEUE_LATENCY {
+                    latency_vec.pop_back();
+                }
+                latency_vec.push_front(t_delta);
+
+                println!(
+                    "Avg Latency : {}ms , Current Latency: {}",
+                    get_weighted_latency(latency_vec),
+                    t_delta
+                );
+
                 match packet.command {
                     VoyeursCommand::Ready(p) => {
-                        let mut s = state.lock().await;
                         if settings.standalone {
                             if mpv.get_property::<bool>("pause").unwrap() == p {
                                 s.ignore_next = true;
@@ -89,7 +108,6 @@ pub async fn handle_connection(
                     VoyeursCommand::Seek(t) => {
                         let current_time: f64 =
                             mpv.get_property("playback-time").unwrap_or_default();
-                        let mut s = state.lock().await;
                         if t != current_time {
                             s.ignore_next = true;
 
@@ -117,7 +135,6 @@ pub async fn handle_connection(
                         let duration = mpv.get_property("duration").unwrap_or_default();
                         let pause: bool = mpv.get_property("pause").unwrap_or_default();
                         let current_time = mpv.get_property("playback-time").unwrap_or_default();
-                        let mut s = state.lock().await;
                         s.peers.get_mut(&addr).unwrap().username = username;
                         s.send(addr, VoyeursCommand::Filename(filename)).await;
                         s.send(addr, VoyeursCommand::Duration(duration)).await;
@@ -134,7 +151,6 @@ pub async fn handle_connection(
                             if Url::parse(&streamname).is_err() {
                                 streamname = "".to_owned();
                             }
-                            let mut s = state.lock().await;
                             s.send(addr, VoyeursCommand::StreamName(streamname)).await;
                         }
                     }
@@ -149,7 +165,6 @@ pub async fn handle_connection(
                             })
                             .unwrap();
                             while !matches!(mpv.event_listen().unwrap(), Event::FileLoaded) {}
-                            let mut s = state.lock().await;
                             s.send(
                                 addr,
                                 VoyeursCommand::NewConnection(settings.username.to_string()),
